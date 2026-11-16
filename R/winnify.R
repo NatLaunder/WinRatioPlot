@@ -1,356 +1,437 @@
-
-as_winnify <- function (x, ...) UseMethod("as_winnify", x)
-
-#' Enables Prioritised Outcomes analysis using rank-based statistical methods
+#' Better Prioritised Outcomes Analyses 
 #'
-#' @description Wrapper function facilitating use of other R analysis functions
-#' under the Generalised Pairwise Comparisons framework
-#'
-#' @usage winnify(formula, statistic, data)
+#' @description 
+#' winnify is a wrapper function that facilitates improved reporting of 
+#' Generalised Pairwise Comparisons with Prioritised Outcomes e.g.
+#' Win Ratio (Pocock et al. 2012), Win Odds (Dong et al. 2020) and
+#' Net Benefit (Buyse et al. 2010).
+#' 
+#' It takes a formula that specifies one or more outcome variables
+#' and then iteratively executes an analysis function to estimate
+#' a statistic based on the first outcome, then the first and second outcome,
+#' and so on. It also estimates the statistic on each outcome independently
+#' of all other outcomes to provide additional context.
+#' 
+#' In doing so, it provides convenient estimates of the statistic
+#' as successively less important outcomes are added to the analysis.
+#' This enables improved visualisation of results across outcomes and
+#' more transparent reporting (Johns et al. 2026). 
+#' 
+#' It also facilitates the use of rank-based statistical functions
+#' for Generalised Pairwise Comparisons with Prioritised Outcomes
+#' when preferences among pairwise comparisons are fully transitive.  
 #'
 #' @param formula An object of class formula describing the analyses to run. Details of model specification are given in Details
-#' @param statistic A function for performing analysis based on a formula and data. Details are given in Details.
 #' @param data A data.frame to analyse
+#' @param statistic A function for performing analysis based on a formula and data. Details are given in Details.
+#' @param ... Other arguments passed onto \code{statistic}
 #'
 #' @details
 #' The left hand side of the formula should list all outcomes to consider, in order of decreasing importance from the left.
-#' The right hand side of the formula lists all independent variables. The first term on the left hand side indicates the
-#' primary variable of interest, which should contain exactly two groups.
-#'
-#' statistic should be a function that takes a formula and a dataset and should return a named vector of length 4 containing
-#' estimate, lower, upper and pval
-#'
-#' NOTE: wins/losses/ties are not adjusted for covariates even if statistic specifies this
-#'
-#' @examples
-#'
-#' statistic <- function(formula,data){
-#'
-#'         fit <- genodds::genodds(response = data[,as.character(formula)[2]],
-#'                                 group = data[,as.character(formula)[3]])
-#'
-#'         out <- c(fit$pooled_lnodds,fit$pooled_lnconf.int, fit$pooled_p)
-#'         names(out) <- c("estimate","lower","upper","pval")
-#'         out[1:3] <- exp(out[1:3])
-#'         out
+#' The right hand side of the formula lists all independent variables. The following special functions are used to indicate
+#' fields of interest:
+#' 
+#' \itemize{
+#' \item \code{w_arm(x)} - marks \code{x} as being the grouping variable. Is mandatory in the formula.
+#' \item \code{w_id(x)} - marks \code{x} as being the ID variable
+#' \item \code{w_stratum(x)} - marks \code{x} as being the stratum variable
+#' \item \code{w_time(x)} - marks \code{x} as being the time variable for time-varying covariates.
+#' \item \code{w_iptw(x)} - marks \code{x} as being a weight variable for use with iptw weighting
 #' }
+#' 
+#' \code{w_arm(x)} is needed for both the supplied \link{wins} and \link{ranks} functions,
+#' while \code{w_id(x)}, \code{w_stratum(x)} and \code{w_time(x)} are only accepted by \link{wins}. 
+#' 
+#' @returns An object of class Winnify
+#' 
+#' @examples
+#' 
+#' library(genodds)
+#' 
+#' my_statistic <- function(formula,data,...){
+#'         lhs <- stats::model.frame(formula[1:2],data=data)
+#'         rhs <- stats::model.frame(formula[c(1,3)],data=data)
+#'   
+#'         if(ncol(lhs)!=1) stop("Left hand side of formula should have one term")
+#'         if(ncol(rhs)!=1) stop("Left hand side of formula should have one term")
+#'   
+#'         fit <- genodds(response = lhs[,1],
+#'                        group = rhs[,1],
+#'                         ...)
+#'   
+#'         # genodds returns an object of class Genodds.
+#'         # if it didn't, we would need to give it a class
+#'         # we can write write S3 methods for.         
+#'         # class(fit) <- c("MyRankStat",class(fit))   
+#'         fit
+#' }
+#' 
+#' # There's no coef() or confint() functions for
+#' # class Genodds. We need to create some S3 methods to
+#' # extract this info.
+#' coef.Genodds <- function(x){x$pooled_lnodds}
+#' confint.Genodds <- function(x){matrix(x$pooled_lnconf.int,nrow=1)}
 #'
-#' result <- winnify(mRS+early_neuro_improvement~treat,
-#'                   statistic = statistic,
+#' result <- winnify(mRS+early_neuro_improvement~w_arm(treat),
+#'                   statistic = ranks,
+#'                   ranks_statistic = my_statistic,
 #'                   data = neuro_improvement)
+#' 
+#' plot(result,effect_neutral_point = 1,effect_scale_log = FALSE)
 #'
-#' plot(result,neutral_point = 1,log_scale = F)
-#'
-#'
-#'
-#'
-winnify <- function(formula, statistic, data){
+#' @references Johns, Hannah, et al. "Practical guidance for Win Statistics and Tournament Methods for multifaceted outcomes in stroke research: Review and recommendations." International Journal of Stroke (2026) DOI: https://doi.org/10.1177/17474930261475853
+#' 
+#' @rdname winnify
+#' @export winnify
+winnify <- function(formula, statistic=winnify::wins, data, ...){
 
-        warning("There are almost no checks in here. This needs fixed.")
+        # Input sanitation
+        data <- as.data.frame(data)
+        if(!is.function(statistic)) stop("statistic should be a function with formula and data arguments")
+        if(!rlang::is_formula(formula)) stop("formula should be a formula")
+
+        if(!("formula" %in% methods::formalArgs(statistic))) stop("statistic function needs a formula argument")
+        if(!("data" %in% methods::formalArgs(statistic))) stop("statistic function needs a data argument")
 
         lhs <- formula[-3]
         rhs <- formula[-2]
 
-        get_wlt <- function(y, x){
-
-                xtab <- table(y,x)
-
-                pairTab <- outer(xtab[,1],xtab[,2])
-
-                wins <- sum(pairTab[upper.tri(pairTab,diag = F)])
-                losses <- sum(pairTab[lower.tri(pairTab,diag = F)])
-                ties <- sum(diag(pairTab))
-
-                return(c(win=wins,tie=ties,loss=losses))
-        }
-
-        # We need to modify the data sheet behind the scenes to add in our column
-        # for left hand side of formula. This is a little bit cursed but it will
-        # identify a safe column name for us to use
-        lhs_name <- "lhs_winnified"
-        lhs_name_attempt <- 1
-        while(lhs_name %in% colnames(data)){
-                lhs_name <- paste0("lhs_winnified",lhs_name_attempt)
-                lhs_name_attempt <- lhs_name_attempt+1
-        }
-
-        # We need to know the group intervention in order to calculate wins/losses/ties
-        main_comparator <- attr(terms(rhs),"term.labels")[1]
-
-        # We expect that the main comparator is a factor of two levels, with the second level
-        # being intervention.
-        data[,main_comparator] <- as.factor(data[,main_comparator])
-        if(length(levels(data[,main_comparator])) != 2) stop(sprintf("Main comparator %s must have exactly two levels",main_comparator))
-
-        lhs <- attr(terms(lhs),"term.labels")
-
-        formula <- reformulate(attr(terms(rhs),"term.labels"),response = lhs_name)
-
+        lhs <- attr(stats::terms(lhs),"term.labels")
 
         out <- lapply(1:length(lhs), function(i){
-
-                print(i)
-
-                # Run on individual values
                 tmp_data <- data
-                tmp_data[,lhs_name] <- tmp_data[,lhs[i]]
 
-                individual_result <- statistic(formula,tmp_data)
+                tmp_formula <- stats::as.formula(paste(c(lhs[i],as.character(rhs)),collapse = ""))
+                individual_result <- statistic(formula=tmp_formula,data = tmp_data,...)
 
-                # Construct ranks based on cumulative results and run on that
+                tmp_formula <- stats::as.formula(paste(c(paste(lhs[1:i],collapse="+"),as.character(rhs)),collapse = ""))
+                cumulative_result <- statistic(tmp_formula,tmp_data,...)
 
-                ranks <- data[,lhs[1:i],drop=F]
-                ranks <- unique(ranks)
 
-                ranks <- ranks[
-                        do.call("order",c(lapply(1:ncol(ranks),function(i){
-                                ranks[,i]
-                        })))
-                        ,
-                        ,drop=F
-                ]
+                if(any(c("data.frame","matrix") %in% class(individual_result))){
+                        individual_result <- as.data.frame(individual_result)
+                        cumulative_result <- as.data.frame(cumulative_result)
+                } else {
+                        individual_result <- as.data.frame(matrix(individual_result,nrow = 1,dimnames = list(NULL,names(individual_result))))
+                        cumulative_result <- as.data.frame(matrix(cumulative_result,nrow = 1,dimnames = list(NULL,names(cumulative_result))))
+                }
 
-                ranks[,lhs_name] <- 1:nrow(ranks)
+                # Construct rows based on these results
+                if("effect_size" %in% colnames(individual_result)){
+                        effectSize_name <- individual_result[,"effect_size"]
+                } else {
+                        effectSize_name <- "Effect Size"
+                }
 
-                tmp_data <- merge(data,ranks)
 
-                cumulative_wlt <- get_wlt(tmp_data[,lhs_name],tmp_data[,main_comparator])
-                cumulative_wlt <- c(win_inherit =0, cumulative_wlt,loss_inherit =0) # Just initialise, we will set this up later
-                cumulative_result <- statistic(formula,tmp_data)
+                result <- data.frame(effect_size = effectSize_name,
+                                     outcome_names = i
+                )
 
-                # Construct row for object based on these results
-                names(individual_result) <- paste(names(individual_result),"individual",sep="_")
+                if("neutral_point" %in% colnames(individual_result)){
+                        result <- cbind(result,neutral_point = individual_result[,"neutral_point"])
+                }
 
-                names(cumulative_result) <- paste(names(cumulative_result),"cumulative",sep="_")
+                if("tie_handling" %in% colnames(individual_result)){
+                        result <- cbind(result,tie_handling = individual_result[,"tie_handling"])
+                }
 
-                c(cumulative_wlt,cumulative_result,individual_result)
+                colnames(individual_result) <- paste(colnames(individual_result),"individual",sep="_")
+                colnames(cumulative_result) <- paste(colnames(cumulative_result),"cumulative",sep="_")
+
+                result <- cbind(result,
+                                individual_result[,which(!grepl("^(effect_size|win|loss|tie|neutral_point|tie_handling)",colnames(individual_result)))],
+                                cumulative_result[,which(!grepl("^(effect_size|neutral_point|tie_handling)",colnames(cumulative_result)))]
+                )
+
+                attr(result,"groups") <- attr(individual_result,"groups")
+
+                result
 
         })
 
-        out <- as.data.frame(do.call("rbind",out))
-
-        out <- cbind(outcome_names = lhs,out)
-
-        # TODO: Discuss with Nat. This doesn't match with what we're doing in other functions, see the following code chunk:
-        # data.frame(outcome_names=names(tmp_wr_cumulative$call$outcome[i]),
-        #            win_inherit=(tmp_wr_cumulative$total.wins-tmp_wr_cumulative$wins[i]), win=tmp_wr_cumulative$wins[i],
-        #            tie=tmp_wr_cumulative$total.ties,
-        #            loss=tmp_wr_cumulative$loss[i], loss_inherit=(tmp_wr_cumulative$total.loss-tmp_wr_cumulative$loss[i]),
-        #            win_ratio_individual=tmp_wr_individual$wr,
-        #            ci_lower_individual=tmp_wr_individual$wr.lower, ci_upper_individual=tmp_wr_individual$wr.upper,
-        #            win_ratio_cumulative=tmp_wr_cumulative$wr,
-        #            ci_lower_cumulative=tmp_wr_cumulative$wr.lower, ci_upper_cumulative=tmp_wr_cumulative$wr.upper
-        # )
-
-        if(nrow(out)>1){
-                out$win_inherit[-1] <- out$win[-nrow(out)]
-                out$loss_inherit[-1] <- out$loss[-nrow(out)]
-
-                out$win <- out$win - out$win_inherit
-                out$loss <- out$loss - out$loss_inherit
+        groups <- lapply(out,function(x){attr(x,"groups")})
+        groups <- unique(groups)
+        if(length(groups) != 1){
+                groups <- c("Control", "Intervention")
+        } else {
+                groups <- unlist(groups)
         }
+        out <- as.data.frame(do.call("rbind",out))
+        out$outcome_names <- factor(out$outcome_names, levels = 1:length(lhs), labels = lhs)
 
+        out <- as_winnify.data.frame(out)
 
-        overall_row <- out[nrow(out),,drop=FALSE]
-
-        overall_row[,c("estimate_individual","lower_individual","upper_individual","pval_individual")] <- overall_row[,c("estimate_cumulative","lower_cumulative","upper_cumulative","pval_cumulative")]
-        overall_row$outcome_names <- "Overall"
-        out <- rbind(out,overall_row)
-
-        attr(out,"levels") <- levels(data[,main_comparator])
-        class(out) <- c("Winnify",class(out))
+        attr(out,"effect.sizes") <-  unique(out$outcome)
+        attr(out,"groups") <- groups
 
         out
 
 }
 
-
-#' Visualise prioritised outcome effect estimates
-#'
-#' Visualises the contribution of individual outcomes under generalized pairwise
-#' comparisons with prioritized outcomes methods, e.g. Win Ratio (Pocock 2012),
-#' Win Odds (Dong 2020) and Net Benefit (Buyse 2010).
-#'
-#'
-#' @usage
-#' po_plot(df, effect_name, neutral_point=NULL,
-#' tie_handling=NULL, outcome_names="outcome_names",
-#' win_inherit="win_inherit", win="win", tie="tie",
-#' loss="loss", loss_inherit="loss_inherit",
-#' effect_individual="effect_individual",
-#' ci_lower_individual="ci_lower_individual",
-#' ci_upper_individual="ci_upper_individual",
-#' effect_cumulative="effect_cumulative",
-#' ci_lower_cumulative="ci_lower_cumulative",
-#' ci_upper_cumulative="ci_upper_cumulative")
-#'
-#' @param df A data frame containing the analysis results to be plotted.
-#' @param effect_name A string specifying type of analysis to appear in the forest plot label.
-#' @param neutral_point An number specifying the point of no effect for intervention vs control.
-#' @param tie_handling A string specifying how ties should be treated.
-#' @param outcome_names A string indicating the column of \code{df} containing the names
-#' of the outcomes.
-#' @param win_inherit A string indicating the column of \code{df} containing the
-#' inherited wins for each outcome.
-#' @param win A string indicating the column of \code{df} containing the wins for
-#' each outcome.
-#' @param tie A string indicating the column of \code{df} containing the ties for
-#' each outcome.
-#' @param loss A string indicating the column of \code{df} containing the losses for
-#' each outcome.
-#' @param loss_inherit A string indicating the column of \code{df} containing the
-#' inherited losses for each outcome.
-#' @param effect_individual A string indicating the column of \code{df} containing
-#' the effect size for each outcome when considered independently (not ranked).
-#' @param ci_lower_individual A string indicating the column of \code{df} containing
-#' the lower boundary of the confidence interval for the effect size for each outcome
-#' when considered independently (not ranked).
-#' @param ci_upper_individual A string indicating the column of \code{df} containing
-#' the upper boundary of the confidence interval for the effect size for each outcome
-#' when considered independently (not ranked).
-#' @param effect_cumulative A string indicating the column of \code{df} containing
-#' the cumulative effect size for each outcome when considered ranked.
-#' @param ci_lower_cumulative A string indicating the column of \code{df} containing
-#' the lower boundary of the confidence interval for the cumulative effect size for
-#' each outcome when considered ranked.
-#' @param ci_upper_cumulative A string indicating the column of \code{df} containing
-#' the upper boundary of the confidence interval for the cumulative effect size for
-#' each outcome when considered ranked.
-#'
+#' 
+#' @param x a \code{Winnify} object returned by \code{\link{winnify}()} or \code{\link{as_winnify}()}
+#' @param effect_size a character string or integer specifying which effect size to plot. Only relevant when \code{x} reports multiple effect sizes.
+#' @param label_effect a character string for labelling the effect size. Inferred from \code{x} and \code{effect_size} if possible.
+#' @param label_control a character string indicating the name of the control group
+#' @param label_intervention a character string indicating the name of the intervention/comparator group
+#' @param pairs_tie a character string indicating where the line splitting ties in the Overall row of the pairs plot should be drawn. If \code{NA}, no line is drawn. See Details. Inferred from \code{x} if possible.
+#' @param pairs_tie.color a character string indicating the color of the line splitting ties
+#' @param pairs_tie.linetype a character string indicating the linetype of the line splitting ties
+#' @param pairs.fill a character string or character vector indicating the color scheme to use for the pairs plot. See Details.
+#' @param pairs.fill.reverse a logical indicating if the color scheme provided in \code{pairs.fill} should be reversed. See Details.
+#' @param pairs_component.width a number indicating the width of the component bars in the pairs plot.
+#' @param pairs_overall.width a number indicating the width of the overall bar in the pairs plot.
+#' @param effect_scale_log a logical indicating if the effect size should be shown on a log scale
+#' @param effect_neutral_point  a numeric value indicating the neutral point for the effect plot. Inferred from \code{x} if possible.
+#' @param effect_neutral_line.color a character string indicating the color of the neutral line in the effect plot.
+#' @param effect_background_loss.fill a character string indicating the color of the background corresponding to favoring control in the effect plot. By default, inferred from \code{pairs.fill}
+#' @param effect_background_win.fill a character string indicating the color of the background corresponding to favoring intervention in the effect plot. By default, inferred from \code{pairs.fill}
+#' @param effect_background.alpha a numeric value indicating the opacity (alpha) of the background in the effect plot
+#' @param effect_individual_color a character string indicating the color of the individual treatment effects in the effect plot
+#' @param effect_cumulative.color a character string indicating the color of the cumulative treatment effects in the effect plot
+#' @param effect_cumulative.dodge_width a number indicating the dodging width for the cumulative effect in the effect plot
+#' @param effect_cumulative_polygon.height a number indicating the height of the final diamond showing the overall effect
+#' @param effect_cumulative.linetype = a character string indicating the linetype for the line connecting cumulative effects. \code{NA} removes this line.
+#' @param ... additional arguments
 #'
 #' @details
-#' The win ratio plot function is a way to visualise win ratio/win odds/etc. estimates
-#' based on prioritised outcomes. This is done with two plots:
-#' \describe{
-#' \item{}{The left plot visualises the contribution of each outcome level
-#' of the prioritised outcome hierarchy to the overall proportion of wins, losses
-#' and ties. At each successive outcome level, ties remaining from the previous level are
-#' resolved and then passed onto the next outcome.}
-#' \item{}{The right plot presents a forest plot of the individual outcome effect
-#' estimate as well as the cumulative effect estimate to show how the effect
-#' estimate shifts as successive outcomes are considered.}
+#'
+#' \code{pairs_tie} controls how splitting of ties in the final overall value are visualised. There are three options for this:
+#' \itemize{
+#' \item \code{"drop"} - ties are split to respect the final ratio of wins to losses. This is consistent with the Win Ratio
+#' \item \code{"split"} - ties are split evenly between wins and losses. This is consistent with the Win Odds
+#' \item \code{NA} - no line is drawn
 #' }
 #'
-#' The dataframe \code{df} must contain columns for all parameters listed except
-#' \code{effect_name, neutral_point and tie_handling}.
+#' \code{pairs.fill} can either be a character vector of length 5 or the name of a ColorBrewer palette (see <https://colorbrewer2.org>).
 #'
-#' Note, the outcome hierarchy is inferred from the order of the rows in the \code{df},
-#' whereby the first row is the highest level outcome, etc.
-#'
-#' \code{tie_handling} specifies how ties are handled in the analysis so that a
-#' dashed line at the position ties were assigned to the wins and losses in the overall
-#' row can be added. This should be set to \code{"drop"} or \code{"split"}. If not
-#' specified no dashed line will appear indicating the position of splitting of ties
-#' for the overall level.
-#'
-#' Note, at each outcome level, \code{win} and \code{loss} correspond to the new wins and
-#' losses that were not already calculated from outcomes with greater priority.
-#' \code{win_inherit} and \code{loss_inherit} correspond to the cumulative sums of
-#' wins and losses that are inherited from higher ranked outcomes.
-#'
-#'
-#' @return
-#' A \code{patchwork} object containing two plots (left and right):
-#' \describe{
-#' \item{}{The left plot shows the proportions of inherited
-#' wins/wins/ties/losses/inherited losses for each outcome when ranked and overall.}
-#' \item{}{The right plot shows the measured effect (e.g., win ratio) at both a
-#' cumulatively ranked outcome level (with overall) and for each outcome independently.}
+#'  If a character vector is supplied, it should contain the following named values:
+#'  \itemize{
+#'  \item \code{"loss_inherited"} - the fill color for losses inherited from the previous level
+#'  \item \code{"loss"}  - the fill color for losses new to the current level
+#'  \item \code{"neutral"}  - the fill color for neutral/tied pairs
+#'  \item \code{"win"}  - the fill color for wins new to the current level
+#'  \item \code{"win_inherited"}  - the fill color for wins inherited from the previous level
 #' }
+#' If the vector is unnamed, names will be assumed based on these positions.
+#'
+#' If a ColorBrewer pallette is provided, a palette of length 5 is used. This pallette is reordered such that the sequence of colors is 2,1,3,5,4.
+#' This allocates the extremes of the colour pallette to new wins and losses.
+#' \code{pairs.fill.reverse} can be used to reverse the overall color sequence for a ColorBrewer pallette and is otherwise ignored.
 #'
 #'
-#' @examples
-#' # Create a dataframe containing analysis results to be plotted
-#' test_data_overall_fn <- data.frame(outcome_names=c("Death", "Length of hospital stay",
-#'                                 "Time off work", "Wellbeing"),
-#'                                 win_inherit=c(0,15,25,33),
-#'                                 win=c(15,10,8,15),
-#'                                 tie=c(80,60,40,15),
-#'                                 loss=c(5,10,12,10),
-#'                                 loss_inherit=c(0,5,15,27),
-#'                                 win_ratio=c(3,1,0.67,1.5),
-#'                                 ci_lower=c(2.6,0.6,0.27,1.1),
-#'                                 ci_upper=c(3.4,1.4,1.07,1.9),
-#'                                 win_ratio_cum=c(3,1.67,1.22,1.30),
-#'                                 ci_lower_cum=c(2.6,1.32,0.92,1.10),
-#'                                 ci_upper_cum=c(3.4,2.02,1.52,1.50))
-#'
-#' # Visualise the prioritised outcome effect estimate
-#' po_plot(test_data_overall_fn, effect_name = "Win Ratio", neutral_point = 1,
-#'                         outcome_names="outcome_names", win_inherit="win_inherit",
-#'                         win="win", tie="tie", loss="loss", loss_inherit="loss_inherit",
-#'                         effect_individual="win_ratio", ci_lower_individual="ci_lower",
-#'                         ci_upper_individual="ci_upper", effect_cumulative="win_ratio_cum",
-#'                         ci_lower_cumulative="ci_lower_cum", ci_upper_cumulative="ci_upper_cum")
-#'
-#' @references
-#' Pocock SJ, Ariti CA, Collier TJ, Wang D. The win ratio: a new approach to the analysis of composite endpoints in clinical trials based on clinical priorities. European Heart Journal. 2012;33(2):176-182. doi:10.1093/eurheartj/ehr352
-#'
-#' Dong G, Hoaglin DC, Qiu J, et al. The Win Ratio: On Interpretation and Handling of Ties. Statistics in Biopharmaceutical Research. 2020;12(1):99-106. doi:10.1080/19466315.2019.1575279
-#'
-#' Buyse M. Generalized pairwise comparisons of prioritized outcomes in the two-sample problem. Statistics in Medicine. 2010;29(30):3245-3257. doi:10.1002/sim.3923
 #'
 #'
-plot.Winnify <- function(x, log_scale=F,
-                         effect_name=NULL,neutral_point=NULL, tie_handling=NULL
+#' 
+#' @importFrom base plot
+#' @rdname winnify
+#' @method plot Winnify
+#' @export plot Winnify
+plot.Winnify <- function(x,
+                         effect_size = NULL,
+
+                         label_effect=NULL,
+                         label_control = NULL,
+                         label_intervention = NULL,
+
+                         pairs_tie=NULL,
+                         pairs_tie.color="#222222",
+                         pairs_tie.linetype="dashed",
+
+                         pairs.fill = NULL,
+                         pairs.fill.reverse = NULL,
+                         pairs_component.width  = 1,
+                         pairs_overall.width  = 0.6,
+
+                         effect_scale_log=FALSE,
+                         effect_neutral_point=NULL,
+                         effect_neutral_line.color = "#222222",
+
+                         effect_background_loss.fill = NULL,
+                         effect_background_win.fill = NULL,
+                         effect_background.alpha=0.15,
+
+                         effect_individual_color = "grey40",
+
+                         effect_cumulative.color = "black",
+                         effect_cumulative.dodge_width = 0.1,
+                         effect_cumulative_polygon.height = 0.36,
+                         effect_cumulative.linetype = "dashed",
+
+                         ...
                     ){
 
-        # Load default arguments from attr(x) where possible
-
-        # Some arguments need a default, others can just be left as NULL
-        if(is.null(effect_name)) {
-                effect_name <- attr(x,"effect_name")
-        }
-        if(is.null(effect_name)) {
-                effect_name <-  "Effect Size"
-        }
+        
+        
+        # Silence note about gloval variable bindings
+        level <- width <- p_prev <- p <- pairType <- xmin <- xmax <- ymin <-
+        ymax <- favours_int <- level_offset <- estimat <- ci_lower <- 
+        ci_upper <- outcome_type <- x_coord <- y_coord <- estimate <-  NULL
 
 
-
-        if(is.null(neutral_point)) {
-                neutral_point <- attr(x,"neutral_point")
+        if(is.null(label_control)){
+                label_control <- attr(x, "groups")[1]
         }
 
-        if(is.null(tie_handling)) {
-                tie_handling <- attr(x,"tie_handling")
+        if(is.null(label_intervention)){
+                label_intervention <- attr(x, "groups")[2]
+        }
+
+        if(is.null(label_control)){
+                label_control <- "Control"
+        }
+        if(is.null(label_intervention)){
+                label_intervention <- "Intervention"
+        }
+
+        pairs.fill.reverse_redundant <- !is.null(pairs.fill.reverse)
+        if(is.null(pairs.fill)){
+                pairs_loss_inherited.fill="tan1"
+                pairs_loss.fill="red2"
+                pairs_neutral.fill="khaki1"
+                pairs_win.fill = "forestgreen"
+                pairs_win_inherited.fill = "#97d42c"
+        } else if(is.character(pairs.fill) & length(pairs.fill)==1 & all(pairs.fill %in% rownames(RColorBrewer::brewer.pal.info))){
+
+                pairs.fill.reverse_redundant <- FALSE
+                brewer_pallette <- RColorBrewer::brewer.pal(5,pairs.fill)
+                if(pairs.fill.reverse) brewer_pallette <- rev(brewer_pallette)
+
+                pairs_loss_inherited.fill <- brewer_pallette[2]
+                pairs_loss.fill <- brewer_pallette[1]
+                pairs_neutral.fill <- brewer_pallette[3]
+                pairs_win.fill = brewer_pallette[5]
+                pairs_win_inherited.fill <- brewer_pallette[4]
+
+        } else if(is.character(pairs.fill) & length(pairs.fill) == 5){
+                if(!is.null(names(pairs.fill))){
+
+                        if(length(setdiff(
+                                c("loss_inherited","loss","neutral","win","win_inherited"),
+                                names(pairs.fill)
+                        ))){
+                                stop(sprintf(
+                                        "Missing the following named elements %s",
+                                        paste0(setdiff(
+                                                c("loss_inherited","loss","neutral","win","win_inherited"),
+                                                names(pairs.fill)
+                                        ),collapse = ", ")
+                                ))
+                        }
+
+                        pairs_loss_inherited.fill <- pairs.fill["loss_inherited"]
+                        pairs_loss.fill <- pairs.fill["loss"]
+                        pairs_neutral.fill <- pairs.fill["neutral"]
+                        pairs_win.fill = pairs.fill["win"]
+                        pairs_win_inherited.fill <- pairs.fill["win_inherited"]
+
+                } else {
+                        pairs_loss_inherited.fill <- pairs.fill[1]
+                        pairs_loss.fill <- pairs.fill[2]
+                        pairs_neutral.fill <- pairs.fill[3]
+                        pairs_win.fill = pairs.fill[4]
+                        pairs_win_inherited.fill <- pairs.fill[5]
+                }
+        } else {
+                stop("unrecognised option for pairs.fill")
+        }
+
+        if(pairs.fill.reverse_redundant) warning("pairs.fill.reverse argument is only used when pairs.fill is a ColorBrewer pallette")
+
+        if(is.null(effect_background_loss.fill)) effect_background_loss.fill <-  pairs_loss.fill
+        if(is.null(effect_background_win.fill)) effect_background_win.fill <-  pairs_win.fill
+
+
+        # Get which effect size to plot
+        if(is.null(effect_size)) effect_size <- 1L
+        if(length(effect_size) != 1) stop("effect_size should be of length 1")
+        if(is.numeric(effect_size)){
+                effect_size <- unique(x$effect_size)[as.integer(effect_size)]
+        } else if(is.character(effect_size)){
+
+                editDistances <- utils::adist(tolower(effect_size),tolower(unique(x$effect_size)),costs = c(insertions = 1, deletions = Inf, substitutions = Inf))
+                editDistances <- c(editDistances)
+                names(editDistances) <- unique(x$effect_size)
+                editDistances <- editDistances[is.finite(editDistances)]
+
+                if(length(editDistances)>1){
+
+                        if(sum(editDistances==min(editDistances)) > 1){
+                                stop(sprintf("'%s' is ambiguous and matches multiple of %s",effect_size,paste(unique(x$effect_size), collapse = ", ")))
+                        } else {
+                                chosen <- names(editDistances)[editDistances==min(editDistances)]
+                                message(sprintf("'%s' matches multiple of %s. %s assumed.",effect_size,paste(unique(x$effect_size), collapse = ", "),chosen))
+                                effect_size <- chosen
+                        }
+
+                } else if(length(editDistances)==0){
+                        stop(sprintf("%s does not match any of %s",effect_size,paste(unique(x$effect_size), collapse = ", ")))
+                } else {
+                        effect_size <- names(editDistances)
+                }
+        }
+
+        x <- x[which(x$effect_size==effect_size),]
+
+        # Load default arguments from x where possible
+
+
+        if(is.null(label_effect)) {
+                label_effect <- effect_size
+        }
+        if(is.null(label_effect)) {
+                label_effect <-  "Effect Size"
+        }
+
+        if(is.null(effect_neutral_point)) {
+                effect_neutral_point <- unique(x$neutral_point)
         }
 
 
+        if(is.null(pairs_tie)) {
+                pairs_tie <- unique(x$tie_handling)
+        }
+        if(!is.null(pairs_tie)) if(is.na(pairs_tie)) pairs_tie <- NULL
 
         # Create level ranking order variable
         # This is used to help rearrange things later on
         x <- cbind(level = 1:nrow(x), x)
 
-        ### Parameters for plots -----------------------
+        ### Variables for plots -----------------------
         # Set parameters for plot
-        outcome_box_width <- 1
-        overall_box_width <- 0.6
-        forest_plot_polygon_height <- 0.36
-        forest_plot_line_offset <- 0.1
 
-        forest_plot_label <- effect_name
-        outcome_label <- sprintf("Outcome %s", tolower(effect_name))
-        cumulative_label <- sprintf("Cumulative %s", tolower(effect_name))
-
+        outcome_label <- sprintf("Outcome %s", tolower(label_effect))
+        cumulative_label <- sprintf("Cumulative %s", tolower(label_effect))
 
         # Create a list of outcome names to use later in plot (reverse order given the plot axis is reversed)
         level_label_names_list <- rev(as.list(x$outcome_names))
 
         # Put dataframe in long form to generate proportions of wins/ties/losses etc.
-        df_long <- do.call("rbind",lapply(c("loss_inherit","loss","tie","win","win_inherit"), function(i){
+        df_long <- do.call("rbind",lapply(c("loss_inherit","loss","tie_cumulative","win","win_inherit"), function(i){
                 out <-  x[,c("level","outcome_names",i)]
                 colnames(out)[3] <- "n"
                 out$pairType <- i
                 out
         }))
+        df_long <- df_long[which(!is.na(df_long$n)),]
 
         # Reorder long form dataframe
         df_long <- df_long[order(df_long$level),]
 
         # Make pairtype a factor
         df_long$pairType <- factor(df_long$pairType,
-                                   levels = c("loss_inherit", "loss", "tie", "win", "win_inherit"),
+                                   levels = c("loss_inherit", "loss", "tie_cumulative", "win", "win_inherit"),
                                    labels = c("Inherited losses", "Losses", "Ties", "Wins", "Inherited wins"))
+        df_long$pairType <- droplevels(df_long$pairType)
+
+        wlt_pallette <- c(
+                "Inherited losses" = pairs_loss_inherited.fill,
+                "Losses" = pairs_loss.fill,
+                "Ties" = pairs_neutral.fill,
+                "Wins" = pairs_win.fill,
+                "Inherited wins" = pairs_win_inherited.fill
+        )[levels(df_long$pairType)]
 
         # Create a proportion variable for each level
         df_long$p <- df_long$n
@@ -365,7 +446,7 @@ plot.Winnify <- function(x, log_scale=F,
 
 
         # Set box width variable
-        df_long$width <- ifelse(df_long$level==max(df_long$level), overall_box_width, outcome_box_width)
+        df_long$width <- ifelse(df_long$level==max(df_long$level), pairs_overall.width, pairs_component.width)
 
         ### Proportional stacked bar graph -----------------------
         # Win ratio plot with separate overall line
@@ -385,18 +466,12 @@ plot.Winnify <- function(x, log_scale=F,
                         labels=level_label_names_list,
                         minor_break=NULL,
                         limits=c(
-                                max(df_long$level)+overall_box_width/2,
-                                outcome_box_width/2
+                                max(df_long$level)+pairs_overall.width/2,
+                                pairs_component.width/2
                         )
                 ) +
                 ggplot2::scale_fill_manual(
-                        values = c(
-                                "tan1",
-                                "red2",
-                                "khaki1",
-                                "forestgreen",
-                                "#97d42c"
-                        )
+                        values = wlt_pallette
                 ) +
                 ggplot2::guides(
                         fill = ggplot2::guide_legend(
@@ -405,7 +480,7 @@ plot.Winnify <- function(x, log_scale=F,
                         )
                 ) +
                 ggplot2::coord_flip() +
-                ggplot2::ylab("Proportion (intervention vs control)") +
+                ggplot2::ylab(sprintf("Proportion (%s vs %s)", label_intervention, label_control)) +
                 ggplot2::theme_bw() +
                 ggplot2::theme(
                         panel.grid.major.y = ggplot2::element_blank(),
@@ -414,10 +489,10 @@ plot.Winnify <- function(x, log_scale=F,
                 ggplot2::theme(axis.title.x = ggplot2::element_text(face="bold"))
 
         ### Tie handling -----------------------
-        if(!is.null(tie_handling)){
+        if(!is.null(pairs_tie)){
 
                 #### Drop ties -----------------------
-                if(tie_handling=="drop"){
+                if(pairs_tie=="drop"){
                         # drop: ties_start + losses/(wins+losses)*ties
                         dash_ties_start <- unname(unlist(
                                 df_long[
@@ -447,8 +522,8 @@ plot.Winnify <- function(x, log_scale=F,
                                 ]
                         ))
 
-                        dash_x <- max(df_long$level)-overall_box_width/2
-                        dash_xend <- max(df_long$level)+overall_box_width/2
+                        dash_x <- max(df_long$level)-pairs_overall.width/2
+                        dash_xend <- max(df_long$level)+pairs_overall.width/2
                         y_dash <- dash_ties_start + dash_losses/(dash_losses+dash_wins)*dash_ties
 
                         wr_box_overall2 <- wr_box_overall2 +
@@ -458,13 +533,14 @@ plot.Winnify <- function(x, log_scale=F,
                                         yend=y_dash,
                                         x=dash_x,
                                         xend=dash_xend,
-                                        linetype="dashed"
+                                        linetype=pairs_tie.linetype,
+                                        color = pairs_tie.color
                                 ) +
                                 ggplot2::xlab(NULL)
                 }
 
                 ### Split ties -----------------------
-                if(tie_handling=="split"){
+                if(pairs_tie=="split"){
 
                         # split: ties_start + 0.5*ties
                         dash_ties_start <- unname(unlist(
@@ -481,8 +557,8 @@ plot.Winnify <- function(x, log_scale=F,
                                 ]
                         ))
 
-                        dash_x <- max(df_long$level)-overall_box_width/2
-                        dash_xend <- max(df_long$level)+overall_box_width/2
+                        dash_x <- max(df_long$level)-pairs_overall.width/2
+                        dash_xend <- max(df_long$level)+pairs_overall.width/2
                         y_dash <- dash_ties_start + 0.5*dash_ties
 
                         wr_box_overall2 <- wr_box_overall2 +
@@ -492,12 +568,13 @@ plot.Winnify <- function(x, log_scale=F,
                                         yend=y_dash,
                                         x=dash_x,
                                         xend=dash_xend,
-                                        linetype="dashed"
+                                        linetype=pairs_tie.linetype,
+                                        color = pairs_tie.color
                                 ) +
                                 ggplot2::xlab(NULL)
                 }
 
-        } # End if !is.na(tie_handling)
+        } # End if !is.na(pairs_tie)
 
         # Create a long format of the dataframe with just the data for the forest plot
         drop <- c("win_inherit", "win", "tie", "loss", "loss_inherit")
@@ -523,8 +600,8 @@ plot.Winnify <- function(x, log_scale=F,
         df_forest <- df_forest[order(df_forest$level),]
 
         df_forest$level_offset <- ifelse(df_forest$outcome_type == "_individual",
-                                         df_forest$level-forest_plot_line_offset,
-                                         df_forest$level+forest_plot_line_offset)
+                                         df_forest$level-effect_cumulative.dodge_width,
+                                         df_forest$level+effect_cumulative.dodge_width)
         df_forest$outcome_type <- factor(df_forest$outcome_type,
                                          levels = c("_individual", "_cumulative"),
                                          labels = c(outcome_label, cumulative_label))
@@ -533,8 +610,8 @@ plot.Winnify <- function(x, log_scale=F,
         # We need the final outcome to draw the final overall estimate as a diamond later on.
         # Extract this information here
         diamond_df = data.frame(
-                x_coord=c(max(df_forest$level)-forest_plot_polygon_height/2, max(df_forest$level),
-                          max(df_forest$level)+forest_plot_polygon_height/2, max(df_forest$level)
+                x_coord=c(max(df_forest$level)-effect_cumulative_polygon.height/2, max(df_forest$level),
+                          max(df_forest$level)+effect_cumulative_polygon.height/2, max(df_forest$level)
                 ),
                 y_coord=c(unname(unlist(df_forest[df_forest$level==max(df_forest$level) &df_forest$outcome_type==outcome_label, "estimate"])),
                           unname(unlist(df_forest[df_forest$level==max(df_forest$level) & df_forest$outcome_type==outcome_label, "ci_upper"])),
@@ -550,17 +627,20 @@ plot.Winnify <- function(x, log_scale=F,
 
         wr_forest_overall_diamond_cum2 <- ggplot2::ggplot(df_forest)
 
-        if(!is.null(neutral_point)){
+        if(!is.null(effect_neutral_point)){
                 # Create dataframe with info to make the green and red background panels for forest plot
                 background_colourpanel <- data.frame(favours_int=c(0,1),
                                                      xmin=c(Inf,Inf),
                                                      xmax=c(-Inf,-Inf),
-                                                     ymin=c( ifelse(log_scale,0,-Inf), neutral_point),
-                                                     ymax=c(neutral_point,Inf))
+                                                     ymin=c( ifelse(effect_scale_log,0,-Inf), effect_neutral_point),
+                                                     ymax=c(effect_neutral_point,Inf))
 
                 background_colourpanel$favours_int <- factor(background_colourpanel$favours_int,
                                                              levels = c(0,1),
-                                                             labels = c("Favours control", "Favours intervention"))
+                                                             labels = c(sprintf("Favours %s", label_control),
+                                                                        sprintf("Favours %s", label_intervention)
+                                                             )
+                )
 
                 wr_forest_overall_diamond_cum2 <- wr_forest_overall_diamond_cum2 +
                         ggplot2::geom_rect(data=background_colourpanel,
@@ -571,29 +651,32 @@ plot.Winnify <- function(x, log_scale=F,
                               ymax=ymax,
                               fill=favours_int
                       ),
-                      alpha=0.15) +
+                      alpha=effect_background.alpha) +
                         ggplot2::scale_fill_manual(
-                                values=c("#D10707",
-                                         "#45E928")
+                                values=c(effect_background_loss.fill,
+                                         effect_background_win.fill)
                         )+
-                        ggplot2::geom_hline(yintercept=neutral_point,color="#1A2678")
+                        ggplot2::geom_hline(yintercept=effect_neutral_point,color=effect_neutral_line.color)
         }
 
 
 
         # Only show path for the cumulative effect, this is the thing we care about
-        wr_forest_overall_diamond_cum2 <- wr_forest_overall_diamond_cum2+
-        ggplot2::geom_line(data=df_forest[
-                                        df_forest$level<max(x$level) &
+        if(!is.na(effect_cumulative.linetype)){
+                wr_forest_overall_diamond_cum2 <- wr_forest_overall_diamond_cum2+
+                        ggplot2::geom_line(data=df_forest[
+                                df_forest$level<max(x$level) &
                                         df_forest$outcome_type == cumulative_label,
-                                        ],
-                           ggplot2::aes(
-                                   x=level_offset,
-                                   y=estimate
-                           ),
-                           color="black",
-                           linetype="dashed"
-        )
+                        ],
+                        ggplot2::aes(
+                                x=level_offset,
+                                y=estimate
+                        ),
+                        color=effect_cumulative.color,
+                        linetype=effect_cumulative.linetype
+                        )
+        }
+
 
         # Show error bars and points for both cumulative and individual estimates
         wr_forest_overall_diamond_cum2 <- wr_forest_overall_diamond_cum2+
@@ -622,7 +705,8 @@ plot.Winnify <- function(x, log_scale=F,
         wr_forest_overall_diamond_cum2 <- wr_forest_overall_diamond_cum2+
         ggplot2::geom_polygon(
                 data = diamond_df,
-                ggplot2::aes(x=x_coord, y=y_coord),group=1
+                ggplot2::aes(x=x_coord, y=y_coord),group=1,
+                fill = effect_cumulative.color
         )
 
 
@@ -630,25 +714,25 @@ plot.Winnify <- function(x, log_scale=F,
         ggplot2::scale_x_reverse(
                 breaks=NULL,
                 limits=c(
-                        max(df_forest$level)+overall_box_width/2,
-                        outcome_box_width/2
+                        max(df_forest$level)+pairs_overall.width/2,
+                        pairs_component.width/2
                 )
         ) +
                 ggplot2::xlab(NULL) +
-                ggplot2::ylab(forest_plot_label) +
+                ggplot2::ylab(label_effect) +
                 ggplot2::guides(
                         color = ggplot2::guide_legend(reverse = FALSE, title = NULL),
                         shape = ggplot2::guide_legend(title = NULL),
                         fill = ggplot2::guide_legend(title = NULL)
                 ) +
-                ggplot2::scale_color_manual(values=c("grey40", "black")) +
+                ggplot2::scale_color_manual(values=c(effect_individual_color, effect_cumulative.color)) +
                 ggplot2::scale_shape_manual(values=c(4,16)) +
                 ggplot2::coord_flip() +
                 ggplot2::theme_bw() +
                 ggplot2::theme(axis.title.x = ggplot2::element_text(face="bold"))
 
 
-        if(log_scale){
+        if(effect_scale_log){
                 wr_forest_overall_diamond_cum2 <- wr_forest_overall_diamond_cum2 + ggplot2::scale_y_log10()
         } else {
                 wr_forest_overall_diamond_cum2 <- wr_forest_overall_diamond_cum2 + ggplot2::scale_y_continuous()

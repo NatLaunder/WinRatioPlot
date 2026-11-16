@@ -1,4 +1,4 @@
-exportPattern("^[[:alpha:]]+")
+exportPattern("^[[:alpha:]_]+")
 S3method("as_winnify", "data.frame")
 S3method("as_winnify", "WinRatio")
 S3method("plot", "Winnify")

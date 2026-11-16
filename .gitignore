@@ -2,3 +2,10 @@
 .DS_Store
 .Rproj.user
 .Rhistory
+.Rhistory
+.vscode*
+.codemap*
+
+
+/.quarto/
+**/*.quarto_ipynb

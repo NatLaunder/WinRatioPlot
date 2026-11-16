@@ -2,9 +2,37 @@
 % Please edit documentation in R/winnify.R
 \name{winnify}
 \alias{winnify}
-\title{Enables Prioritised Outcomes analysis using rank-based statistical methods}
+\alias{plot.Winnify}
+\title{Better Prioritised Outcomes Analyses}
 \usage{
-winnify(formula, statistic, data)
+winnify(formula, statistic = winnify::wins, data, ...)
+
+\method{plot}{Winnify}(
+  x,
+  effect_size = NULL,
+  label_effect = NULL,
+  label_control = NULL,
+  label_intervention = NULL,
+  pairs_tie = NULL,
+  pairs_tie.color = "#222222",
+  pairs_tie.linetype = "dashed",
+  pairs.fill = NULL,
+  pairs.fill.reverse = NULL,
+  pairs_component.width = 1,
+  pairs_overall.width = 0.6,
+  effect_scale_log = FALSE,
+  effect_neutral_point = NULL,
+  effect_neutral_line.color = "#222222",
+  effect_background_loss.fill = NULL,
+  effect_background_win.fill = NULL,
+  effect_background.alpha = 0.15,
+  effect_individual_color = "grey40",
+  effect_cumulative.color = "black",
+  effect_cumulative.dodge_width = 0.1,
+  effect_cumulative_polygon.height = 0.36,
+  effect_cumulative.linetype = "dashed",
+  ...
+)
 }
 \arguments{
 \item{formula}{An object of class formula describing the analyses to run. Details of model specification are given in Details}
@@ -12,41 +40,154 @@ winnify(formula, statistic, data)
 \item{statistic}{A function for performing analysis based on a formula and data. Details are given in Details.}
 
 \item{data}{A data.frame to analyse}
+
+\item{...}{additional arguments}
+
+\item{x}{a \code{Winnify} object returned by \code{\link{winnify}()} or \code{\link{as_winnify}()}}
+
+\item{effect_size}{a character string or integer specifying which effect size to plot. Only relevant when \code{x} reports multiple effect sizes.}
+
+\item{label_effect}{a character string for labelling the effect size. Inferred from \code{x} and \code{effect_size} if possible.}
+
+\item{label_control}{a character string indicating the name of the control group}
+
+\item{label_intervention}{a character string indicating the name of the intervention/comparator group}
+
+\item{pairs_tie}{a character string indicating where the line splitting ties in the Overall row of the pairs plot should be drawn. If \code{NA}, no line is drawn. See Details. Inferred from \code{x} if possible.}
+
+\item{pairs_tie.color}{a character string indicating the color of the line splitting ties}
+
+\item{pairs_tie.linetype}{a character string indicating the linetype of the line splitting ties}
+
+\item{pairs.fill}{a character string or character vector indicating the color scheme to use for the pairs plot. See Details.}
+
+\item{pairs.fill.reverse}{a logical indicating if the color scheme provided in \code{pairs.fill} should be reversed. See Details.}
+
+\item{pairs_component.width}{a number indicating the width of the component bars in the pairs plot.}
+
+\item{pairs_overall.width}{a number indicating the width of the overall bar in the pairs plot.}
+
+\item{effect_scale_log}{a logical indicating if the effect size should be shown on a log scale}
+
+\item{effect_neutral_point}{a numeric value indicating the neutral point for the effect plot. Inferred from \code{x} if possible.}
+
+\item{effect_neutral_line.color}{a character string indicating the color of the neutral line in the effect plot.}
+
+\item{effect_background_loss.fill}{a character string indicating the color of the background corresponding to favoring control in the effect plot. By default, inferred from \code{pairs.fill}}
+
+\item{effect_background_win.fill}{a character string indicating the color of the background corresponding to favoring intervention in the effect plot. By default, inferred from \code{pairs.fill}}
+
+\item{effect_background.alpha}{a numeric value indicating the opacity (alpha) of the background in the effect plot}
+
+\item{effect_individual_color}{a character string indicating the color of the individual treatment effects in the effect plot}
+
+\item{effect_cumulative.color}{a character string indicating the color of the cumulative treatment effects in the effect plot}
+
+\item{effect_cumulative.dodge_width}{a number indicating the dodging width for the cumulative effect in the effect plot}
+
+\item{effect_cumulative_polygon.height}{a number indicating the height of the final diamond showing the overall effect}
+
+\item{effect_cumulative.linetype}{= a character string indicating the linetype for the line connecting cumulative effects. \code{NA} removes this line.}
+}
+\value{
+An object of class Winnify
 }
 \description{
-Wrapper function facilitating use of other R analysis functions
-under the Generalised Pairwise Comparisons framework
+winnify is a wrapper function that facilitates improved reporting of 
+Generalised Pairwise Comparisons with Prioritised Outcomes e.g.
+Win Ratio (Pocock et al. 2012), Win Odds (Dong et al. 2020) and
+Net Benefit (Buyse et al. 2010).
+
+It takes a formula that specifies one or more outcome variables
+and then iteratively executes an analysis function to estimate
+a statistic based on the first outcome, then the first and second outcome,
+and so on. It also estimates the statistic on each outcome independently
+of all other outcomes to provide additional context.
+
+In doing so, it provides convenient estimates of the statistic
+as successively less important outcomes are added to the analysis.
+This enables improved visualisation of results across outcomes and
+more transparent reporting (Johns et al. 2026). 
+
+It also facilitates the use of rank-based statistical functions
+for Generalised Pairwise Comparisons with Prioritised Outcomes
+when preferences among pairwise comparisons are fully transitive.
 }
 \details{
 The left hand side of the formula should list all outcomes to consider, in order of decreasing importance from the left.
-The right hand side of the formula lists all independent variables. The first term on the left hand side indicates the
-primary variable of interest, which should contain exactly two groups.
+The right hand side of the formula lists all independent variables. The following special functions are used to indicate
+fields of interest:
 
-statistic should be a function that takes a formula and a dataset and should return a named vector of length 4 containing
-estimate, lower, upper and pval
+\itemize{
+\item \code{w_arm(x)} - marks \code{x} as being the grouping variable. Is mandatory in the formula.
+\item \code{w_id(x)} - marks \code{x} as being the ID variable
+\item \code{w_stratum(x)} - marks \code{x} as being the stratum variable
+\item \code{w_time(x)} - marks \code{x} as being the time variable for time-varying covariates.
+\item \code{w_iptw(x)} - marks \code{x} as being a weight variable for use with iptw weighting
+}
 
-NOTE: wins/losses/ties are not adjusted for covariates even if statistic specifies this
+\code{w_arm(x)} is needed for both the supplied \link{wins} and \link{ranks} functions,
+while \code{w_id(x)}, \code{w_stratum(x)} and \code{w_time(x)} are only accepted by \link{wins}.
+
+\code{pairs_tie} controls how splitting of ties in the final overall value are visualised. There are three options for this:
+\itemize{
+\item \code{"drop"} - ties are split to respect the final ratio of wins to losses. This is consistent with the Win Ratio
+\item \code{"split"} - ties are split evenly between wins and losses. This is consistent with the Win Odds
+\item \code{NA} - no line is drawn
+}
+
+\code{pairs.fill} can either be a character vector of length 5 or the name of a ColorBrewer palette (see <https://colorbrewer2.org>).
+
+ If a character vector is supplied, it should contain the following named values:
+ \itemize{
+ \item \code{"loss_inherited"} - the fill color for losses inherited from the previous level
+ \item \code{"loss"}  - the fill color for losses new to the current level
+ \item \code{"neutral"}  - the fill color for neutral/tied pairs
+ \item \code{"win"}  - the fill color for wins new to the current level
+ \item \code{"win_inherited"}  - the fill color for wins inherited from the previous level
+}
+If the vector is unnamed, names will be assumed based on these positions.
+
+If a ColorBrewer pallette is provided, a palette of length 5 is used. This pallette is reordered such that the sequence of colors is 2,1,3,5,4.
+This allocates the extremes of the colour pallette to new wins and losses.
+\code{pairs.fill.reverse} can be used to reverse the overall color sequence for a ColorBrewer pallette and is otherwise ignored.
 }
 \examples{
 
-statistic <- function(formula,data){
+library(genodds)
 
-        fit <- genodds::genodds(response = data[,as.character(formula)[2]],
-                                group = data[,as.character(formula)[3]])
-
-        out <- c(fit$pooled_lnodds,fit$pooled_lnconf.int, fit$pooled_p)
-        names(out) <- c("estimate","lower","upper","pval")
-        out[1:3] <- exp(out[1:3])
-        out
+my_statistic <- function(formula,data,...){
+        lhs <- stats::model.frame(formula[1:2],data=data)
+        rhs <- stats::model.frame(formula[c(1,3)],data=data)
+  
+        if(ncol(lhs)!=1) stop("Left hand side of formula should have one term")
+        if(ncol(rhs)!=1) stop("Left hand side of formula should have one term")
+  
+        fit <- genodds(response = lhs[,1],
+                       group = rhs[,1],
+                        ...)
+  
+        # genodds returns an object of class Genodds.
+        # if it didn't, we would need to give it a class
+        # we can write write S3 methods for.         
+        # class(fit) <- c("MyRankStat",class(fit))   
+        fit
 }
 
-result <- winnify(mRS+early_neuro_improvement~treat,
-                  statistic = statistic,
+# There's no coef() or confint() functions for
+# class Genodds. We need to create some S3 methods to
+# extract this info.
+coef.Genodds <- function(x){x$pooled_lnodds}
+confint.Genodds <- function(x){matrix(x$pooled_lnconf.int,nrow=1)}
+
+result <- winnify(mRS+early_neuro_improvement~w_arm(treat),
+                  statistic = ranks,
+                  ranks_statistic = my_statistic,
                   data = neuro_improvement)
 
-plot(result,neutral_point = 1,log_scale = F)
+plot(result,effect_neutral_point = 1,effect_scale_log = FALSE)
 
-
-
-
+}
+\references{
+Johns, Hannah, et al. "Practical guidance for Win Statistics and Tournament Methods for multifaceted outcomes in stroke research: Review and recommendations." International Journal of Stroke (2026) DOI: https://doi.org/10.1177/17474930261475853
 }

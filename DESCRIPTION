@@ -1,11 +1,11 @@
 Package: winnify
 Type: Package
 Title: Visual Summaries and Wrappers for Estimating the Win Ratio and Related Measures
-Version: 0.1.0
+Version: 1.0.0
 Authors@R: c(
         person("Hannah","Johns",
                 role=c("aut","cre"),
-                email="htjohns@gmail.com",
+                email="dr.hannah.johns@gmail.com",
                 comment=c(ORCID="0000-0003-2135-0504")
         ),
         person("Nathalie","Launder",
@@ -17,18 +17,37 @@ Authors@R: c(
                 comment=c(ORCID="0000-0002-9807-6606")
         )
         ) 
-Maintainer: Hannah Johns <htjohns@gmail.com>
-Description: Visualises the contribution of individual outcomes under generalized pairwise comparisons e.g. Win Ratio, Win Odds and Net Benefit.
+Maintainer: Hannah Johns <dr.hannah.johns@gmail.com>
+Description: Facilitates analysis of Generalised Pairwise Comparisons with Prioritised Outcomes
+             (e.g. Win Ratio, Win Odds). Includes a wrapper function that enables rank-based
+             Desirability of Outcome Ranking analyses with any existing ordinal analysis package
+             (e.g. probabilistic index models provided by R package `pim') plus automated input
+             processing and a formula-based interface for estimating win statistics
+             (using R package `WINS') without needing to restructure or rename the data.
+             In both cases, supports improved interpretation of prioritised outcomes analyses
+             using the approach proposed by Johns et al. (2026) <doi:10.1177/17474930261475853> where
+             the treatment effect is estimated separately for each outcome plus cumulatively
+             as they are added to the outcome prioritisation. The contribution of each outcome
+             to the overall effect size is then visualised with a supplied plotting function.
 License: GPL (>=2.0)
 Encoding: UTF-8
 LazyData: true
-RoxygenNote: 7.3.2
 Depends: 
-    R (>= 2.10)
+    R (>= 3.5)
 Imports:
     ggplot2,
-    patchwork
+    RColorBrewer,
+    patchwork,
+    rlang,
+    WINS,
+    methods,
+    sloop
 Suggests:
     genodds,
     pim,
-    WinRatio
+    MASS,
+    testthat (>= 3.0.0),
+    WinRatio,
+    survival
+Config/roxygen2/version: 8.1.0
+Config/testthat/edition: 3

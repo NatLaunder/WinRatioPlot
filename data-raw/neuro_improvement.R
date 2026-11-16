@@ -27,7 +27,7 @@ neuro_improvement$early_neuro_improvement <- apply(neuro_improvement,1,function(
                     c("worse","stable","better")
                     ]
 
-        sample(-1:1,1,replace=T,prob=probs)
+        sample(-1:1,1,replace=TRUE,prob=probs)
 
 })
 
